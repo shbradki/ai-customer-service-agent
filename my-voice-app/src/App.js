@@ -1,5 +1,6 @@
-import React, { use, useState } from 'react';
+import React, { useState } from 'react';
 import { saveUserData, getUserData } from './firebaseUtils';
+import { useMicVAD, utils } from '@ricky0123/vad-react';
 
 function App() {
   const [name, setName] = useState('');
@@ -8,6 +9,72 @@ function App() {
   const [chatMode, setChatMode] = useState(false);
   const [userInput, setUserInput] = useState('');
   const [chatLog, setChatLog] = useState([]);
+
+  const vad = useMicVAD({
+    startOnLoad: true,
+    onSpeechEnd: (audioBuffer) => {
+      handleAudioCapture(audioBuffer);
+    },
+    positiveSpeechThreshold: 0.6,
+    minSpeechFrames: 4,
+  })
+
+  async function handleAudioCapture(audioBuffer) {
+    const wav = utils.encodeWAV(audioBuffer);
+    const audioBlob = new Blob([wav], { type: 'audio/wav'})
+
+    try {
+      const response = await fetch('http://127.0.0.1:5001/ai-customer-service-fdd11/us-central1/transcribeAudio', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'audio/wav',
+        },
+        body: audioBlob,
+      });
+
+      const data = await response.json();
+      const transcript = data.transcript;
+      if (transcript) {
+        sendTranscriptToAI(transcript)
+      }
+    } catch (error) {
+      console.error('Error sending audio to Deepgram: ', error)
+    }
+  }
+
+  async function sendTranscriptToAI(transcript) {
+    const newChatLog = [...chatLog, { sender: 'user', text: transcript }];
+  
+    try {
+      // Send the message to Firebase function
+      const response = await fetch('http://127.0.0.1:5001/ai-customer-service-fdd11/us-central1/chatWithAssistant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: transcript }),
+      });
+  
+      const data = await response.json();
+      const assistantResponse = data.reply;
+  
+      newChatLog.push({ sender: 'assistant', text: assistantResponse });
+      setChatLog(newChatLog);
+
+      const utterance = new SpeechSynthesisUtterance(assistantResponse);
+      vad.pause()
+
+      utterance.onend = () => {
+        console.log('Finished speaking.')
+        vad.start()
+      }
+      
+      window.speechSynthesis.speak(utterance);
+
+    } catch (error) {
+      console.error('Error talking to assistant:', error);
+      newChatLog.push({ sender: 'assistant', text: "I'm having trouble responding right now." });
+      setChatLog(newChatLog);
+    }
+  }
 
   const handleStartCall = async () => {
     if (!name || !email) {
@@ -43,66 +110,53 @@ function App() {
   };
 
 
-  const handleSendMessage = async () => {
-    if (!userInput.trim()) return;
+  // const handleSendMessage = async () => {
+  //   if (!userInput.trim()) return;
   
-    const newChatLog = [...chatLog, { sender: 'user', text: userInput }];
+  //   const newChatLog = [...chatLog, { sender: 'user', text: userInput }];
   
-    try {
-      // Send the message to Firebase function
-      const response = await fetch('http://127.0.0.1:5001/ai-customer-service-fdd11/us-central1/chatWithAssistant', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userInput }),
-      });
+  //   try {
+  //     // Send the message to Firebase function
+  //     const response = await fetch('http://127.0.0.1:5001/ai-customer-service-fdd11/us-central1/chatWithAssistant', {
+  //       method: 'POST',
+  //       headers: { 'Content-Type': 'application/json' },
+  //       body: JSON.stringify({ message: userInput }),
+  //     });
   
-      const data = await response.json();
-      const assistantResponse = data.reply;
+  //     const data = await response.json();
+  //     const assistantResponse = data.reply;
   
-      newChatLog.push({ sender: 'assistant', text: assistantResponse });
-      setChatLog(newChatLog);
-      setUserInput('');
-    } catch (error) {
-      console.error('Error talking to assistant:', error);
-      newChatLog.push({ sender: 'assistant', text: "I'm having trouble responding right now." });
-      setChatLog(newChatLog);
-    }
-  };  
+  //     newChatLog.push({ sender: 'assistant', text: assistantResponse });
+  //     setChatLog(newChatLog);
+  //     setUserInput('');
+  //   } catch (error) {
+  //     console.error('Error talking to assistant:', error);
+  //     newChatLog.push({ sender: 'assistant', text: "I'm having trouble responding right now." });
+  //     setChatLog(newChatLog);
+  //   }
+  // };  
 
 
   if (chatMode) {
     return (
       <div style={{ padding: '2rem', maxWidth: '600px', margin: 'auto' }}>
-        <h1>Assistant Chat</h1>
-
-        {message && (
-        <p style={{ marginTop: '1rem', color: message.includes('success') ? 'green' : 'red' }}>
-          {message}
-        </p>
-        )}
-
-        <div style={{ border: '1px solid #ccc', padding: '1rem', height: '300px', overflowY: 'auto', marginBottom: '1rem' }}>
+        <h1>AI Voice Assistant</h1>
+  
+        <div style={{ border: '1px solid #ccc', padding: '1rem', height: '400px', overflowY: 'auto', marginBottom: '1rem' }}>
           {chatLog.map((entry, index) => (
             <div key={index} style={{ textAlign: entry.sender === 'user' ? 'right' : 'left', margin: '0.5rem 0' }}>
               <strong>{entry.sender === 'user' ? 'You' : 'Assistant'}:</strong> {entry.text}
             </div>
           ))}
         </div>
-
-        <input
-          type="text"
-          placeholder="Type your message..."
-          value={userInput}
-          onChange={(e) => setUserInput(e.target.value)}
-          style={{ width: '100%', padding: '0.5rem', marginBottom: '1rem' }}
-        />
-
-        <button
-          onClick={handleSendMessage}
-          style={{ width: '100%', padding: '0.75rem', backgroundColor: 'green', color: 'white', border: 'none', cursor: 'pointer' }}
-        >
-          Send
-        </button>
+  
+        {vad.listening ? (
+          <p style={{ color: 'green' }}>Listening...</p>
+        ) : vad.errored ? (
+          <p style={{ color: 'red' }}>Microphone error. Please refresh.</p>
+        ) : (
+          <p style={{ color: 'gray' }}>Initializing microphone...</p>
+        )}
       </div>
     );
   }
