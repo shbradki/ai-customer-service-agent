@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { saveUserData, getUserData } from './firebaseUtils';
 import { useMicVAD, utils } from '@ricky0123/vad-react';
 import AdminDashboard from './AdminDashboard';
@@ -13,7 +13,13 @@ function App() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [topics, setTopics] = useState(new Set());
   const [documents, setDocuments] = useState(new Set());
-
+  const [taskStack, setTaskStack] = useState(new Set());
+  useEffect(() => {
+    const hasPending = Array.from(taskStack).some(t => t.status === 'pending');
+    if (hasPending) {
+      executeTasks();
+    }
+  }, [taskStack]);
 
   const vad = useMicVAD({
     startOnLoad: false,
@@ -25,16 +31,25 @@ function App() {
   })
 
   function speakMessage(text) {
-    const utterance = new SpeechSynthesisUtterance(text);
-    vad.pause();
+    return new Promise((resolve) => {
+      vad.pause();
+      const utterance = new SpeechSynthesisUtterance(text);
   
-    utterance.onend = () => {
-      console.log('Finished speaking.');
-      vad.start();
-    };
+      window.speechSynthesis.speak(utterance);
   
-    window.speechSynthesis.speak(utterance);
+      const checkIfDone = () => {
+        if (!window.speechSynthesis.speaking) {
+          vad.start();
+          resolve();
+        } else {
+          setTimeout(checkIfDone, 100); 
+        }
+      };
+  
+      checkIfDone();
+    });
   }
+  
   
   function formatTopicList(topics) {
     if (!topics || topics.length === 0) return '';
@@ -57,6 +72,52 @@ function App() {
     return Array.from(cleaned);
   }
 
+  async function executeTasks() {
+    vad.pause()
+    const pendingTasks = Array.from(taskStack).filter(t => t.status === 'pending');
+  
+    console.log("Inside of executeTasks()");
+    console.log("TaskStack:", Array.from(taskStack));
+    console.log("Pending tasks:", pendingTasks);
+  
+    const updatedTasks = new Set();
+  
+    for (const task of Array.from(taskStack)) {
+      if (task.status === 'pending') {
+        let message = '';
+        switch (task.type) {
+          case 'send_invoice':
+            message = `Invoice ${task.document} has been sent to ${email}.`;
+            break;
+          case 'view_invoice':
+            message = `You can view invoice ${task.document} at https://example.com/view/${task.document}`;
+            break;
+          case 'check_order_status':
+            message = `The status of order ${task.order} is: Delivered.`;
+            break;
+          case 'reset_password':
+            message = `You can reset your password here: https://example.com/reset_password`;
+            break;
+          default:
+            message = `Simulated completion of unknown task: ${task.type}`;
+            console.warn('Unknown task type:', task);
+        }
+        
+        const msg = { sender: 'assistant', text: message };
+        setChatLog(prev => [...prev, msg]);
+        await speakMessage(message);
+
+  
+        updatedTasks.add({ ...task, status: 'completed' }); 
+      } else {
+        updatedTasks.add(task);
+      }
+    }
+  
+    setTaskStack(updatedTasks);
+  }
+  
+  
   async function handleAudioCapture(audioBuffer) {
     const wav = utils.encodeWAV(audioBuffer);
     const audioBlob = new Blob([wav], { type: 'audio/wav'})
@@ -81,41 +142,54 @@ function App() {
   }
 
   async function sendTranscriptToAI(transcript) {
-    
+
     const newChatLog = [...chatLog, { sender: 'user', text: transcript }];
   
     try {
-      // Send the message to Firebase function
-      const response = await fetch('http://127.0.0.1:5001/ai-customer-service-fdd11/us-central1/chatWithAssistant', {
+      const response = await fetch('http://127.0.0.1:5001/ai-customer-service-fdd11/us-central1/processMessage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: transcript, chatLog: newChatLog }),
+        body: JSON.stringify({
+          message: transcript,
+          chatLog: newChatLog,
+          state: {
+            topics: Array.from(topics),
+            documents: Array.from(documents),
+            tasks: Array.from(taskStack)
+          }
+        }),
       });
-      const analysisRes = await fetch('http://127.0.0.1:5001/ai-customer-service-fdd11/us-central1/analyzeUserMessage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: transcript }),
-      });
-    
-      const analysis = await analysisRes.json();
-    
-      // Merge new topics
-      if (analysis.topics) {
-        setTopics(prev => new Set([...prev, ...analysis.topics]));
-      }
-    
-      // Merge new documents
-      if (analysis.document_references) {
-        setDocuments(prev => new Set([...prev, ...analysis.document_references]));
-      }
   
       const data = await response.json();
-      const assistantResponse = data.reply;
   
-      newChatLog.push({ sender: 'assistant', text: assistantResponse });
-      setChatLog(newChatLog);
+      // Merge topics
+      if (data.topics) {
+        setTopics(prev => new Set([...prev, ...data.topics]));
+      }
+  
+      console.log('Response topics:', data.topics);
 
-      speakMessage(assistantResponse)
+      
+      
+      // Merge document references
+      if (data.document_references) {
+        setDocuments(prev => new Set([...prev, ...data.document_references]));
+      }
+      
+      console.log("Response tasks: ", data.tasks)
+
+      // Merge task stacks
+      if (data.tasks) {
+        setTaskStack(prev => new Set([...prev, ...data.tasks]));
+      }  
+      
+  
+      // Append assistant reply to chat log
+      newChatLog.push({ sender: 'assistant', text: data.assistantReply });
+      setChatLog(newChatLog);
+  
+      await speakMessage(data.assistantReply);
+      // await executeTasks();
 
     } catch (error) {
       console.error('Error talking to assistant:', error);
@@ -136,6 +210,8 @@ function App() {
   
       let initialMessages = [];
   
+      let greeting;
+
       if (!existingUser) {
         console.log("Saving new user with email:", email);
         await saveUserData(email, {
@@ -146,13 +222,13 @@ function App() {
           documents_sent: [],
         });
   
-        const greeting = `Hi ${firstName}! How can I help you today?`
+        greeting = `Hi ${firstName}! How can I help you today?`
         initialMessages.push({
           sender: 'assistant',
           text: greeting,
         });
 
-        speakMessage(greeting)
+        
   
       } else {
         if (existingUser.past_conversations && existingUser.past_conversations.length > 0) {
@@ -160,7 +236,7 @@ function App() {
           const lastTopics = lastConversation.topics;
           const formattedTopics = formatTopicList(lastTopics);
 
-          const greeting = `Hi ${existingUser.first_name}! Last time we discussed ${formattedTopics}. 
+          greeting = `Hi ${existingUser.first_name}! Last time we discussed ${formattedTopics}. 
                             Is this call about that, or something new?`;
 
           initialMessages.push({
@@ -168,17 +244,17 @@ function App() {
             text: greeting,
           })
 
-          speakMessage(greeting)
+          
 
         } else {
 
-          const greeting = `Welcome back ${existingUser.first_name}! How can I help you today?`
+          greeting = `Welcome back ${existingUser.first_name}! How can I help you today?`
           initialMessages.push({
             sender: 'assistant',
             text: greeting,
           });
 
-          speakMessage(greeting)
+          
 
         }
       }
@@ -186,6 +262,8 @@ function App() {
       setChatLog(initialMessages);
       setChatMode(true);
   
+      await speakMessage(greeting)
+
     } catch (error) {
       console.error('Error saving or accessing user data:', error);
       setMessage('Failed to start call.');
@@ -196,46 +274,55 @@ function App() {
   const handleEndCall = async () => {
     try {
       vad.pause();
-  
-      const currentChat = [...chatLog]; 
-      setChatLog([]); 
-  
+
+      const currentChat = [...chatLog];
+      setChatLog([]);
+
       const hasUserMessage = currentChat.some(entry => entry.sender === 'user');
       if (!hasUserMessage) {
-        console.log('No user message, skipping save.');
-        setChatMode(false)
+        console.log('No user messages. Skipping save.');
+        setChatMode(false);
         return;
       }
+
       const userData = await getUserData(email);
-      if (!userData){
-        setChatMode(false)
+      if (!userData) {
+        setChatMode(false);
         return;
       }
-  
-      const cleaned_topics = cleanTopicList(topics)
-      const cleaned_document_references = cleanDocumentReferences(documents)
-      
+
+      // Clean up sets before saving
+      const cleanedTopics = cleanTopicList(topics);
+      const cleanedDocuments = cleanDocumentReferences(documents);
+      const finalizedTasks = Array.from(taskStack).map(t =>
+        typeof t === 'string' ? JSON.parse(t) : t
+      );
+
+      const newConversation = {
+        timestamp: new Date().toISOString(),
+        chat: currentChat,
+        topics: cleanedTopics,
+        documents_referenced: cleanedDocuments,
+        tasks: finalizedTasks,
+      };
+
       const updatedConversations = [
         ...(userData.past_conversations || []),
-        {
-          timestamp: new Date().toISOString(),
-          topics: cleaned_topics,
-          documents_referenced: cleaned_document_references,
-          chat: currentChat,
-        }
+        newConversation,
       ];
-  
+
       await saveUserData(email, {
         ...userData,
         past_conversations: updatedConversations,
       });
-  
+
+      // Reset state
       setTopics(new Set());
       setDocuments(new Set());
-
-      console.log('Chat log saved!');
+      setTaskStack(new Set());
       setChatMode(false);
       setMessage('Call ended. You can start a new one if needed.');
+      console.log('Conversation saved.');
     } catch (error) {
       console.error('Error saving conversation: ', error);
     }

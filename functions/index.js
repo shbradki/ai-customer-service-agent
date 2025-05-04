@@ -7,43 +7,6 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-exports.chatWithAssistant = functions.https.onRequest(async (req, res) => {
-  const userMessage = req.body.message;
-
-  if (!userMessage) {
-    return res.status(400).send({ error: 'No message provided.' });
-  }
-
-  try {
-    const formattedMessages = [
-        {
-          role: 'system',
-          content: `You are a helpful customer service agent. You have already greeted the user.
-            Be concise, avoid repeating yourself, and remember any details the user gives you (like order numbers).
-            Reference earlier messages if relevant.`,
-        },
-        ...chatLog.map(entry => ({
-          role: entry.sender === 'user' ? 'user' : 'assistant',
-          content: entry.text,
-        })),
-        {
-          role: 'user',
-          content: message,
-        },
-      ];
-    const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages: formattedMessages,
-      temperature: 0.7,
-    });
-
-    const assistantReply = response.choices[0].message.content.trim();
-    res.status(200).send({ reply: assistantReply });
-  } catch (error) {
-    console.error('OpenAI request failed:', error);
-    res.status(500).send({ reply: "I'm having trouble responding right now. Please try again later." });
-  }
-});
 
 exports.transcribeAudio = functions.https.onRequest(async (req, res) => {
   try {
@@ -73,125 +36,69 @@ exports.transcribeAudio = functions.https.onRequest(async (req, res) => {
   }
 });
 
-// exports.summarizeChat = functions.https.onRequest(async (req, res) => {
-//     const { chatLog } = req.body;
-  
-//     if (!chatLog || !Array.isArray(chatLog)) {
-//       return res.status(400).send({ error: 'Missing or invalid chatLog' });
-//     }
-  
-//     try {
-//       const messages = [
-//         {
-//           role: 'system',
-//           content: `Given the following chat conversation, determine which category from the list best fits the inquiry: 
+function buildSystemPrompt({ topics = [], documentReferences = [], tasks = [] }) {
+    let summary = [];
+   
 
-//                     Customer Service Categories: Account Creation/Registration, Password Reset, Login Issues, Order Status 
-//                     Inquiry, Product Information, Shipping and Delivery Tracking, Returns and Exchanges, Invoice Inquiry, 
-//                     Billing and Payment Issues, Subscription Management, Account Update, Technical Support, Troubleshooting Issues, 
-//                     Product Warranty Information, Refund Request, Discounts and Promotions, Cancellation of Orders or Services, 
-//                     Loyalty Program Assistance, Customer Feedback, Complaint Resolution, Store Locations and Hours, 
-//                     Service Availability or Outages, Cancellation and Rescheduling of Appointments, FAQ Assistance, 
-//                     Product Recommendations.
-                    
-//                     Your output should just be the category that it matches best and nothing more, ex. "Password Reset" or "Login Issues"`,
-//         },
-//         {
-//           role: 'user',
-//           content: chatLog.map(entry => `${entry.sender}: ${entry.text}`).join('\n'),
-//         },
-//       ];
-  
-//       const response = await openai.chat.completions.create({
-//         model: 'gpt-3.5-turbo',
-//         messages,
-//         temperature: 0.2,
-//       });
-  
-//       const summary = response.choices[0].message.content.trim();
-//       res.status(200).send({ summary });
-  
-//     } catch (error) {
-//       console.error('Error summarizing chat:', error);
-//       res.status(500).send({ error: 'Failed to generate summary' });
-//     }
-//   });
-  
-exports.analyzeUserMessage = functions.https.onRequest(async (req, res) => {
-    const { message } = req.body;
-
-    if (!message) {
-        return res.status(400).send({ error: 'No message provided' });
+    if (topics.length) {
+      summary.push(`The user has discussed the following topics: ${topics.join(', ')}.`);
     }
-
-    try {
-        const response = await openai.chat.completions.create({
-            model: 'gpt-3.5-turbo',
-            messages: [
-                {
-                    role: 'system',
-                    content: `
-                You are an assistant that extracts structured metadata from customer service messages.
-                
-                Return a JSON object with two fields:
-                
-                {
-                    "topics": [string],               // List of categories the message relates to
-                    "document_references": [string]   // Any document, order number, invoice IDs, or other specific file like those mentioned that may need to be referred to later
-                }
-
-                Valid topics include: Account Creation/Registration, Password Reset, Login Issues, Order Status Inquiry, 
-                Product Information, Shipping and Delivery Tracking, Returns and Exchanges, Invoice Inquiry, 
-                Billing and Payment Issues, Subscription Management, Account Update, Technical Support, Troubleshooting Issues, 
-                Product Warranty Information, Refund Request, Discounts and Promotions, Cancellation of Orders or Services, 
-                Loyalty Program Assistance, Customer Feedback, Complaint Resolution, Store Locations and Hours, 
-                Service Availability or Outages, Cancellation and Rescheduling of Appointments, FAQ Assistance,
-                Product Recommendations.
-                
-                Document references have the following formats:
-                - Orders: order_{number}.pdf
-                - Invoices: invoice_{id}.pdf
-
-                If a generic document form is refered (i.e. "I need help with an order") do not store it as a document reference unless 
-                the details of the document are provided, such as an order number.
-                
-
-                If no topic or document is found, return empty arrays. Do not explain your answer, just return the JSON object.
-
-            `
-                },
-                { role: 'user', content: message }
-            ],
-            temperature: 0.2,
-        });
-
-        let parsed;
-        try {
-            parsed = JSON.parse(response.choices[0].message.content.trim());
-          } catch (e) {
-            console.error('Failed to parse GPT response:', response.choices[0].message.content);
-            return res.status(500).send({ error: 'Invalid JSON from OpenAI' });
-          }
-      
-          const topics = Array.isArray(parsed.topics) ? parsed.topics : [];
-          const documentReferences = Array.isArray(parsed.document_references) ? parsed.document_references : [];
-        res.status(200).send({
-            topics: topics,
-            document_references: documentReferences
-        });
-    } catch (error) {
-        console.error('Error analyzing message:', error);
-        res.status(500).send({ error: 'Failed to analyze message' });
+  
+    if (documentReferences.length) {
+      summary.push(`They have referenced documents such as: ${documentReferences.join(', ')}.`);
     }
-});
+  
+    if (tasks.length) {
+      const taskDescriptions = tasks.map(t => {
+        const status = t.status || 'pending';
+        if (status != "completed") {
+            switch (t.type) {
+                case 'send_invoice':
+                    return `send invoice ${t.document || ''} [${status}]`;
+                case 'view_invoice':
+                    return `view invoice ${t.document || ''} [${status}]`;
+                case 'check_order_status':
+                    return `check order status for ${t.order || ''} [${status}]`;
+                case 'reset_password':
+                    return `reset password [${status}]`;
+                default:
+                    return `${t.type} [${status}]`;
+            }
+        }
+      });
+      summary.push(`Outstanding tasks: ${taskDescriptions.join('; ')}.`);
+    }
+  
+    console.log('[SYSTEM CONTEXT]', { topics, documentReferences, tasks });
+
+    return `
+        You are a helpful customer service assistant. 
+        This is a structured summary of the conversation so far:
+        ${summary.join('\n')}
+        
+        Use this information to respond intelligently.
+        Avoid asking for details the user has already given.
+  `;
+  }
+  
 
 exports.processMessage = functions.https.onRequest(async (req, res) => {
-    const { message, chatLog } = req.body;
-  
+    const { message, chatLog, state = {} } = req.body;
+    const {
+        topics: sessionTopics = [],
+        documents: sessionDocuments = [],
+        tasks: sessionTasks = []
+      } = state;
+
     if (!message || !Array.isArray(chatLog)) {
       return res.status(400).send({ error: 'Missing or invalid message or chatLog' });
     }
   
+    const formattedChat = chatLog.map(entry => ({
+        role: entry.sender === 'user' ? 'user' : 'assistant',
+        content: entry.text,
+      }));
+
     try {
       // STEP 1: Run analysis (topics + document refs)
       const analysisResponse = await openai.chat.completions.create({
@@ -200,15 +107,31 @@ exports.processMessage = functions.https.onRequest(async (req, res) => {
           {
             role: 'system',
             content: `
-            You are an assistant that extracts structured metadata from customer service messages.
-            Return a JSON object with two fields:
-            {
-              "topics": [string],
-              "document_references": [string]
-            }
-            If no topics or documents are found, return empty arrays.
-            Do NOT explain. Just return the JSON object.`,
+                You are an assistant that extracts structured metadata from customer service messages.
+                Return a JSON object with two fields:
+                
+                {
+                "topics": [string],
+                "document_references": [string]
+                }
+
+                Valid topics include: Password Reset, Order Status Inquiry, Viewing an Invoice, Sending an Invoice,
+                 General Inquiry
+
+                Use only the exact valid topic names and ensure you choose the one that fits best.
+                
+                Document references have the following formats:
+                - Orders: order_{number}.pdf
+                - Invoices: invoice_{id}.pdf
+
+                If a generic document form is referenced (i.e. "I need help with an order") do not store it as a document reference unless 
+                the details of the document are provided, such as an order number. Treat it as if no document was found or mentioned until
+                a specific one is referenced.
+
+                If no topics or documents are found, return empty arrays. 
+                Do NOT explain. Just return the JSON object.`,
           },
+          ...formattedChat,
           { role: 'user', content: message },
         ],
         temperature: 0.2,
@@ -222,25 +145,88 @@ exports.processMessage = functions.https.onRequest(async (req, res) => {
         return res.status(500).send({ error: 'Invalid JSON from analysis step' });
       }
   
-      const topics = Array.isArray(analysisData.topics) ? analysisData.topics : [];
-      const documentReferences = Array.isArray(analysisData.document_references) ? analysisData.document_references : [];
+      console.log('[ANALYSIS DATA]', analysisData);
+
+      const newTopics = Array.isArray(analysisData.topics) ? analysisData.topics : [];
+      const newDocuments = Array.isArray(analysisData.document_references) ? analysisData.document_references : [];
+
+      const mergedTopics = Array.from(new Set([...sessionTopics, ...newTopics]));
+      const mergedDocuments = Array.from(new Set([...sessionDocuments, ...newDocuments]));
+
+      console.log('[MERGED TOPICS]', mergedTopics);
+
   
-      // STEP 2: Generate assistant response (with context)
-      const formattedChat = chatLog.map(entry => ({
-        role: entry.sender === 'user' ? 'user' : 'assistant',
-        content: entry.text,
-      }));
+      // STEP 2: Task extraction
+      const taskExtractionResponse = await openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: `
+                You are an assistant that extracts structured task intents from customer service messages.
+                
+                Return a single JSON object with one field:
+
+                Example response:
+                    {
+                    "tasks": [
+                        { "type": "send_invoice", "document": "invoice_275.pdf", "status": "pending" },
+                        { "type": "check_order_status", "order": "order_275", "status": "pending" }
+                    ]
+                    }
+
+                Valid task types are:
+                send_invoice, check_order_status, and reset_password
+
+                Only return clearly requested tasks. If no task is present, return:
+                { "tasks": [] }
+
+                Ensure tasks are in the order in which they are stated.
+
+                All tasks should be contain "status" and it should always be initialized to "pending".
+
+                Do not include markdown formatting. Do not explain.`,
+          },
+          { role: 'user', content: message },
+        ],
+        temperature: 0.3,
+      });
   
+      let taskData;
+      try {
+        const raw = taskExtractionResponse.choices[0].message.content.trim();
+        const parsed = JSON.parse(raw);
+
+        if (parsed && Array.isArray(parsed.tasks)) {
+            taskData = parsed.tasks;
+        } else {
+            console.warn('Parsed JSON did not contain a tasks array:', parsed);
+        }
+
+      } catch (err) {
+        console.error('Failed to parse task extraction response:', taskExtractionResponse.choices[0].message.content);
+        return res.status(500).send({ error: 'Invalid JSON from task step' });
+      }
+
+  
+      const mergedTasks = [...sessionTasks, ...taskData]; 
+
+
+      // STEP 3: Generate assistant response with context
+  
+      const systemPrompt = buildSystemPrompt({
+        topics: mergedTopics,
+        documentReferences: mergedDocuments,
+        tasks: mergedTasks
+      });
+
       const fullMessages = [
-        {
-          role: 'system',
-          content: `You are a helpful customer service agent. You have already greeted the user.
-          Be concise, avoid repeating yourself, and remember any details the user gives you (like order numbers).
-          Reference earlier messages if relevant.`,
-        },
+        { role: 'system', content: systemPrompt },
         ...formattedChat,
         { role: 'user', content: message },
       ];
+      
+      
   
       const response = await openai.chat.completions.create({
         model: 'gpt-3.5-turbo',
@@ -250,11 +236,12 @@ exports.processMessage = functions.https.onRequest(async (req, res) => {
   
       const assistantReply = response.choices[0].message.content.trim();
   
-      // Send combined results back
+      // Send results back
       return res.status(200).send({
         assistantReply,
-        topics,
-        document_references: documentReferences,
+        topics: mergedTopics,
+        document_references: mergedDocuments,
+        tasks: mergedTasks
       });
   
     } catch (error) {
@@ -262,4 +249,5 @@ exports.processMessage = functions.https.onRequest(async (req, res) => {
       return res.status(500).send({ error: 'Processing failed' });
     }
   });
+  
   
