@@ -415,6 +415,24 @@ function App() {
         View Admin Dashboard
       </button>
 
+      <p style={{ whiteSpace: 'pre-line' }}>
+        {`PLEASE READ:
+
+        This is a showcase of the project's potential use cases, so it should be noted that only four functionalities are possible:
+
+        - resetting password
+        - checking an order status
+        - viewing an invoice
+        - sending an invoice to the entered email
+
+        Additionally, none of these functionalities are real. They simply display a message to chat while creating and executing a hypothetical task on the backend.
+        The links do not work, you will not actually receive an email, and none of the information mentioned is real — it is all simply an exhibition.
+
+        Also please keep in mind that anyone can see the admin dashboard! So if you enter your real name and email, anyone using the site will be able to view that information.
+
+        Thanks and let me know what you think!`}
+      </p>
+
 
       {message && (
         <p style={{ marginTop: '1rem', color: message.includes('success') ? 'green' : 'red' }}>
