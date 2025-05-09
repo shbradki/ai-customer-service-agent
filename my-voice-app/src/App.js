@@ -123,7 +123,7 @@ function App() {
     const audioBlob = new Blob([wav], { type: 'audio/wav'})
 
     try {
-      const response = await fetch('http://127.0.0.1:5001/ai-customer-service-fdd11/us-central1/transcribeAudio', {
+      const response = await fetch('https://us-central1-ai-customer-service-fdd11.cloudfunctions.net/transcribeAudio', {
         method: 'POST',
         headers: {
           'Content-Type': 'audio/wav',
@@ -146,7 +146,7 @@ function App() {
     const newChatLog = [...chatLog, { sender: 'user', text: transcript }];
   
     try {
-      const response = await fetch('http://127.0.0.1:5001/ai-customer-service-fdd11/us-central1/processMessage', {
+      const response = await fetch('https://us-central1-ai-customer-service-fdd11.cloudfunctions.net/processMessage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
