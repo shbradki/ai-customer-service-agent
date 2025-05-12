@@ -87,13 +87,13 @@ function App() {
         let message = '';
         switch (task.type) {
           case 'send_invoice':
-            message = `Invoice ${task.document} has been sent to ${email}.`;
+            message = `${task.document} has been sent to ${email}.`;
             break;
           case 'view_invoice':
-            message = `You can view invoice ${task.document} at https://example.com/view/${task.document}`;
+            message = `You can view ${task.document} at https://example.com/view/${task.document}`;
             break;
           case 'check_order_status':
-            message = `The status of order ${task.order} is: Delivered.`;
+            message = `The status of ${task.order} is: Delivered.`;
             break;
           case 'reset_password':
             message = `You can reset your password here: https://example.com/reset_password`;
